@@ -1,0 +1,15 @@
+{
+  "name": "streamed-pk-hls-stream-resolver",
+  "description": "Resolves streamed.pk embed streams via embed.st protobuf fetch, GOAT WASM decrypt, and HLS relay.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "big-integer": "^1.6.52",
+    "happy-dom": "^20.0.10"
+  }
+}
