@@ -1,6 +1,6 @@
 {
   "name": "streamed-pk-hls-stream-resolver",
-  "description": "Resolves streamed.pk embed streams via embed.st protobuf fetch, GOAT WASM decrypt, and HLS relay.",
+  "description": "Node.js resolver for streamed.pk and embed.st HLS streams: protobuf /fetch handshake, GOAT lock.wasm decrypt in a worker thread, curl relay for strmd.st playlists and PNG-wrapped MPEG-TS segments.",
   "type": "module",
   "engines": {
     "node": ">=22"
