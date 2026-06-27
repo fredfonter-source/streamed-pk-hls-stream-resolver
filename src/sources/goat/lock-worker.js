@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parentPort, workerData } from 'node:worker_threads'
 import { Window } from 'happy-dom'
-import { embedOrigin } from '../env.js'
+import { embedOrigin } from '../../env.js'
 
 const vendorDir = join(dirname(fileURLToPath(import.meta.url)), 'vendor')
 const wasmPath = join(vendorDir, 'lock.wasm')

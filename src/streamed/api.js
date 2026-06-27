@@ -1,8 +1,9 @@
-import { streamedOrigin, ua } from '../env.js'
+import { fetchHeaders } from '../wire/headers.js'
+import { streamedOrigin } from '../env.js'
 
 export async function fetchJson(path) {
   const res = await fetch(`${streamedOrigin}${path}`, {
-    headers: { 'User-Agent': ua, Accept: 'application/json' },
+    headers: fetchHeaders(undefined, { Accept: 'application/json' }),
   })
   if (!res.ok) throw new Error(`streamed.pk ${path} ${res.status}`)
   return res.json()

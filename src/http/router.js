@@ -1,5 +1,5 @@
 import { serve } from '../relay/m3u8.js'
-import { run } from '../goat/run.js'
+import { run } from '../resolve/run.js'
 import { serveStatic } from './static.js'
 
 function json(res, status, body) {

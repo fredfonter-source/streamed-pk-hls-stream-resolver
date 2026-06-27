@@ -1,14 +1,14 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { ua } from '../env.js'
+import { fetchHeaders } from './headers.js'
 
 const exec = promisify(execFile)
 
 function hdrs(slot) {
+  const referer = slot.referer || `${slot.origin}/`
   return {
-    Referer: `${slot.origin}/`,
-    Origin: slot.origin,
-    'User-Agent': ua,
+    ...fetchHeaders(referer),
+    Origin: slot.referer ? new URL(referer).origin : slot.origin,
     Accept: '*/*',
   }
 }

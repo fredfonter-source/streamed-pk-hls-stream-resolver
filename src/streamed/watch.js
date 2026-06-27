@@ -1,6 +1,7 @@
 import { embedOrigin, streamedOrigin } from '../env.js'
 import { fetchJson } from './api.js'
 import { fetchLinks, pickLink } from './match.js'
+import { makeSlot } from '../resolve/slot.js'
 
 const watchRe = /^\/watch\/([^/]+)\/([^/]+)\/(\d+)\/?$/
 
@@ -39,13 +40,6 @@ export async function loadWatch(matchId, source, stream) {
     title: match.title,
     watchUrl: watchLink(match.id, link.source, link.streamNo),
     embedUrl: link.embedUrl,
-    slot: {
-      origin: embedOrigin,
-      path: `${link.source}/${link.id}/${link.streamNo}`,
-      source: link.source,
-      id: link.id,
-      stream: String(link.streamNo),
-      slug: link.id,
-    },
+    slot: makeSlot(embedOrigin, link.source, link.id, link.streamNo),
   }
 }

@@ -1,8 +1,10 @@
-import { postFetch } from '../wire/embed.js'
-import { encodeBody } from './proto.js'
-import { unlock } from './lock.js'
+import { relayLink } from '../relay/link.js'
+import { resolve as resolveGolf, relayReferer } from '../sources/golf/resolve.js'
+import { postFetch } from '../sources/goat/fetch.js'
+import { unlock } from '../sources/goat/lock.js'
+import { encodeBody } from '../sources/goat/proto.js'
 import { loadWatch } from '../streamed/watch.js'
-import { parseInput, relayLink } from './parse.js'
+import { parseInput } from './parse.js'
 
 export async function run(input, origin) {
   let slot
@@ -25,8 +27,14 @@ export async function run(input, origin) {
   }
 
   try {
-    const { body, goat } = await postFetch(encodeBody(slot), slot)
-    const m3u8 = await unlock(slot, goat, body)
+    let m3u8
+    if (slot.source === 'golf') {
+      m3u8 = await resolveGolf(slot)
+      slot.referer = relayReferer
+    } else {
+      const { body, goat } = await postFetch(encodeBody(slot), slot)
+      m3u8 = await unlock(slot, goat, body)
+    }
     return {
       ok: true,
       slug: slot.slug,

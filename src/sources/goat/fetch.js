@@ -1,4 +1,4 @@
-import { ua } from '../env.js'
+import { ua } from '../../env.js'
 
 export async function postFetch(body, slot) {
   const referer = `${slot.origin}/embed/${slot.path}`

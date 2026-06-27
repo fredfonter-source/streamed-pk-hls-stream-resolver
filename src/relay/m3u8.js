@@ -1,17 +1,8 @@
 import { pull } from '../wire/curl.js'
-import { relayLink } from '../goat/parse.js'
+import { parseRelaySlot, relayLink } from './link.js'
 import { segmentBody } from './segment.js'
 
 const cors = { 'Access-Control-Allow-Origin': '*' }
-
-function parseSlot(params) {
-  const path = params.get('embed')
-  const origin = params.get('embedOrigin')
-  if (!path || !origin) throw new Error('embed and embedOrigin required')
-  const parts = path.split('/')
-  if (parts.length !== 3 || parts.some((part) => !part)) throw new Error('invalid embed path')
-  return { origin, path }
-}
 
 function absUri(uri, base) {
   return uri.startsWith('http') ? uri : new URL(uri, base).href
@@ -67,7 +58,7 @@ export async function serve(res, params, origin) {
 
   let slot
   try {
-    slot = parseSlot(params)
+    slot = parseRelaySlot(params)
   } catch (err) {
     res.writeHead(400, { 'Content-Type': 'text/plain' })
     res.end(String(err.message || err))

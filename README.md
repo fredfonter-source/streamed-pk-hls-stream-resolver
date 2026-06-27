@@ -65,17 +65,17 @@ Watch URLs must include `{source}/{stream}` (e.g. `/admin/1`). Short `/watch/{ma
 
 Full URL: `https://streamed.pk/watch/{matchId}/{source}/{stream}`
 
-Parsing: `src/goat/parse.js`. Watch URLs call `src/streamed/` to resolve the embed slot before `/fetch`.
+Parsing: `src/resolve/parse.js`. Watch URLs call `src/streamed/` to resolve the embed slot before source-specific resolve.
 
 ## Architecture
 
-Resolve is triggered by `POST /api/stream` from the UI. Orchestration: `src/goat/run.js`.
+Resolve is triggered by `POST /api/stream` from the UI. Orchestration: `src/resolve/run.js`.
 
 ```mermaid
 sequenceDiagram
   participant UI as player.js
   participant Route as router.js
-  participant Run as goat/run.js
+  participant Run as resolve/run.js
   participant SPK as streamed.pk
   participant EST as embed.st
   participant WASM as lock.wasm
@@ -104,12 +104,13 @@ sequenceDiagram
 | Layer | Module | Responsibility |
 | --- | --- | --- |
 | HTTP | `src/http/router.js` | `/api/stream`, `/api/hls`, static assets |
-| Resolve | `src/goat/run.js` | Parse → fetch → decrypt → relay link |
-| Parse | `src/goat/parse.js` | Watch, embed, and API URLs → embed slot |
+| Resolve | `src/resolve/run.js` | Parse → source resolve → relay link |
+| Parse | `src/resolve/parse.js`, `src/resolve/slot.js` | Watch, embed, and API URLs → embed slot |
 | Match lookup | `src/streamed/` | streamed.pk API for watch URLs |
-| Crypto | `src/goat/lock-worker.js` | GOAT decrypt via `lock.wasm` in a worker |
-| Wire | `src/wire/embed.js`, `src/wire/curl.js` | Embed POST; CDN pull with referer |
-| Relay | `src/relay/m3u8.js`, `src/relay/segment.js` | M3U8 rewrite; PNG-wrapped TS strip |
+| GOAT source | `src/sources/goat/` | `/fetch`, protobuf, WASM decrypt |
+| Golf source | `src/sources/golf/` | Third-party embed chain → m3u8 |
+| Wire | `src/wire/headers.js`, `src/wire/curl.js` | Shared fetch headers; CDN pull (curl) |
+| Relay | `src/relay/link.js`, `src/relay/m3u8.js`, `src/relay/segment.js` | Relay URLs; M3U8 rewrite; PNG-wrapped TS strip |
 | UI | `public/player.js` | Resolve form, hls.js, VLC/MPV export |
 
 Handshake and WASM details: [Embed handshake and GOAT decrypt](#embed-handshake-and-goat-decrypt). Relay and playback: [HLS relay](#hls-relay), [Playback](#playback).
@@ -124,13 +125,13 @@ Every resolve path ends with an embed slot used for `/fetch`, WASM, and relay re
 { origin: "https://embed.st", path: "admin/ppv-leinster-vs-bulls/1", source, id, stream, slug }
 ```
 
-Built by `src/goat/parse.js` (direct embed URLs) or `src/streamed/watch.js` (watch URLs).
+Built by `src/resolve/slot.js` via `src/resolve/parse.js` (direct embed URLs) or `src/streamed/watch.js` (watch URLs).
 
 ### `/fetch` request
 
-`src/goat/proto.js` encodes three protobuf string fields — `source`, `id`, `stream` — into the POST body.
+`src/sources/goat/proto.js` encodes three protobuf string fields — `source`, `id`, `stream` — into the POST body.
 
-`src/wire/embed.js` sends:
+`src/sources/goat/fetch.js` sends:
 
 ```
 POST {origin}/fetch
@@ -148,10 +149,10 @@ Referer: {origin}/embed/{path}
 
 ### WASM decrypt
 
-`src/goat/lock.js` spawns `src/goat/lock-worker.js` in a **worker thread**. The worker:
+`src/sources/goat/lock.js` spawns `src/sources/goat/lock-worker.js` in a **worker thread**. The worker:
 
 - Mounts a **happy-dom** window with stubbed `jwplayer` and mock `fetch`
-- Loads `src/goat/vendor/lock.wasm` via `lock-esm.mjs`
+- Loads `src/sources/goat/vendor/lock.wasm` via `lock-esm.mjs`
 - Calls `set_stream_jw(source, id, stream)`; WASM decrypts the body and requests the `.m3u8` internally
 - Returns the captured CDN URL, e.g. `https://lb10.strmd.st/secure/…/high/mono.m3u8`
 
@@ -181,6 +182,7 @@ Query parameters:
 | `url` | yes | Upstream playlist or segment URL |
 | `embed` | yes | Embed path, e.g. `admin/ppv-leinster-vs-bulls/1` |
 | `embedOrigin` | yes | Embed host, e.g. `https://embed.st` |
+| `referer` | no | Upstream referer override (golf CDN uses `https://exposestrat.com/`) |
 
 Use **`relay`** for browser, VLC, and MPV. **`m3u8`** is useful for debugging but is often blocked without referer.
 
@@ -284,30 +286,42 @@ Environment variables (`src/env.js`):
 
 ```
 src/
-  server.js              HTTP entry
-  env.js                 PORT, origins, USER_AGENT
-  http/router.js         /api/stream, /api/hls, static
-  http/static.js         public file serving
-  streamed/              streamed.pk match lookup (watch URLs only)
-  goat/run.js            resolve + decrypt orchestrator
-  goat/parse.js          URL → slot, relay link
-  goat/proto.js          protobuf body
-  goat/lock.js           spawn WASM worker
-  goat/lock-worker.js    GOAT decrypt
-  goat/vendor/           lock.wasm, lock-esm.mjs
-  wire/embed.js          POST embed.st/fetch
-  wire/curl.js           CDN pull (curl)
-  relay/m3u8.js          HLS relay + URL rewrite
-  relay/segment.js       PNG-wrapped TS strip
+  server.js                 HTTP entry
+  env.js                    PORT, origins, USER_AGENT
+  http/
+    router.js               /api/stream, /api/hls, static
+    static.js               public file serving
+  resolve/
+    run.js                  resolve orchestrator
+    parse.js                URL → embed slot
+    slot.js                 embed slot builder
+  sources/
+    goat/
+      fetch.js              POST embed.st/fetch
+      proto.js              protobuf body
+      lock.js               spawn WASM worker
+      lock-worker.js        GOAT decrypt
+      vendor/               lock.wasm, lock-esm.mjs
+    golf/
+      resolve.js            embedhd → exposestrat → m3u8
+  streamed/                 streamed.pk match lookup (watch URLs)
+  wire/
+    headers.js              shared fetch User-Agent / Referer
+    curl.js                 CDN pull (curl)
+  relay/
+    link.js                 relay URL builder + slot parse
+    m3u8.js                 HLS relay + URL rewrite
+    segment.js              PNG-wrapped TS strip
 public/
-  index.html             resolver UI
-  player.js              hls.js player, timers, VLC/MPV export
+  index.html                resolver UI
+  player.js                 hls.js player, timers, VLC/MPV export
   style.css
 ```
 
 ## Scope and limits
 
-- **streamed.pk / embed.st only** — no other origins.
+- **GOAT sources** (admin, echo, …) use embed.st `/fetch` + WASM. **Golf** uses a separate third-party embed chain.
+- **streamed.pk / embed.st** watch and embed URLs; golf pulls from exposestrat / zohanayaan CDN.
 - **Direct `m3u8`** is returned for inspection but may not play without the relay or embed referer.
 - **Upstream tokens expire** — nothing is persisted or cached.
 - **Match must exist** in `/api/matches/all` for watch URLs; use a direct embed URL if the match has ended.
