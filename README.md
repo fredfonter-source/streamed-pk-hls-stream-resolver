@@ -184,7 +184,7 @@ Query parameters:
 | `embedOrigin` | yes | Embed host, e.g. `https://embed.st` |
 | `referer` | no | Upstream referer override (golf CDN uses `https://exposestrat.com/`) |
 
-Use **`relay`** for browser, VLC, and MPV. **`m3u8`** is useful for debugging but is often blocked without referer.
+Use **`relay`** for in-browser playback. **`m3u8`** plus **`referer`** is what VLC/MPV export uses; bare **`m3u8`** is often blocked without that referer.
 
 ## Playback
 
@@ -194,14 +194,14 @@ The UI loads **hls.js** 1.5.20 from jsDelivr and plays **`relay`** so referer ha
 
 ### VLC / MPV
 
-The UI copies commands using the proxied URL — no referer needed:
+The UI copies commands using the direct **`m3u8`** URL and the upstream referer:
 
 ```bash
-vlc "http://localhost:3000/api/hls?url=…&embed=…&embedOrigin=…"
-mpv --force-media-title="Leinster vs Bulls" "http://localhost:3000/api/hls?url=…&embed=…&embedOrigin=…"
+vlc --http-referrer="https://embed.st/" "https://…/playlist.m3u8"
+mpv --referrer="https://embed.st/" --force-media-title="Leinster vs Bulls" "https://…/playlist.m3u8"
 ```
 
-You can also open **`m3u8`** directly if the player sends the embed referer; the proxied URL is simpler.
+Golf streams use referer `https://exposestrat.com/`. If segments are PNG-wrapped or the CDN still blocks, use **`relay`** instead.
 
 ## Stack
 
@@ -250,6 +250,7 @@ Success:
   "watchUrl": "https://streamed.pk/watch/leinster-vs-bulls-2483276/admin/1",
   "embedUrl": "https://embed.st/embed/admin/ppv-leinster-vs-bulls/1",
   "m3u8": "https://lb….strmd.st/secure/…/high/mono.m3u8",
+  "referer": "https://embed.st/",
   "relay": "http://localhost:3000/api/hls?url=…&embed=…&embedOrigin=…"
 }
 ```
@@ -322,7 +323,7 @@ public/
 
 - **GOAT sources** (admin, echo, …) use embed.st `/fetch` + WASM. **Golf** uses a separate third-party embed chain.
 - **streamed.pk / embed.st** watch and embed URLs; golf pulls from exposestrat / zohanayaan CDN.
-- **Direct `m3u8`** is returned for inspection but may not play without the relay or embed referer.
+- **Direct `m3u8`** plays in VLC/MPV with the returned `referer`; some CDNs still need **`relay`** (PNG-wrapped segments).
 - **Upstream tokens expire** — nothing is persisted or cached.
 - **Match must exist** in `/api/matches/all` for watch URLs; use a direct embed URL if the match has ended.
 - **`curl` required** for CDN and strmd.st fetches.

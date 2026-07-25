@@ -35,6 +35,7 @@ export async function run(input, origin) {
       const { body, goat } = await postFetch(encodeBody(slot), slot)
       m3u8 = await unlock(slot, goat, body)
     }
+    const referer = slot.referer || `${slot.origin}/`
     return {
       ok: true,
       slug: slot.slug,
@@ -45,6 +46,7 @@ export async function run(input, origin) {
       watchUrl: meta?.watchUrl,
       embedUrl: meta?.embedUrl,
       m3u8,
+      referer,
       relay: relayLink(origin, m3u8, slot),
     }
   } catch (err) {

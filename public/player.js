@@ -81,12 +81,12 @@ function startTimer() {
   return timer
 }
 
-function vlcCmd(url) {
-  return `vlc "${url}"`
+function vlcCmd(url, referer) {
+  return `vlc --http-referrer="${referer}" "${url}"`
 }
 
-function mpvCmd(url, name) {
-  return `mpv --force-media-title="${name.replace(/"/g, '\\"')}" "${url}"`
+function mpvCmd(url, name, referer) {
+  return `mpv --referrer="${referer}" --force-media-title="${name.replace(/"/g, '\\"')}" "${url}"`
 }
 
 function hlsErr(data) {
@@ -156,7 +156,7 @@ form.addEventListener('submit', async (event) => {
     })
     const data = await res.json()
     if (!data.ok) throw new Error(`${data.stage || 'error'}: ${data.error || 'resolve failed'}`)
-    if (!data.m3u8 || !data.relay) throw new Error('missing stream URLs in response')
+    if (!data.m3u8 || !data.relay || !data.referer) throw new Error('missing stream URLs in response')
 
     clock.markResolve()
     const name = data.slug.replace(/-/g, ' ')
@@ -164,8 +164,8 @@ form.addEventListener('submit', async (event) => {
     panel.hidden = false
     rawOut.value = data.m3u8
     relayOut.value = data.relay
-    vlcOut.value = vlcCmd(data.relay)
-    mpvOut.value = mpvCmd(data.relay, name)
+    vlcOut.value = vlcCmd(data.m3u8, data.referer)
+    mpvOut.value = mpvCmd(data.m3u8, name, data.referer)
     await play(data.relay, clock)
   } catch (e) {
     stopTimer()
