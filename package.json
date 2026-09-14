@@ -1,15 +1,17 @@
 {
   "name": "streamed-pk-hls-stream-resolver",
-  "description": "Node.js resolver for streamed.pk and embed.st HLS streams: GOAT protobuf /fetch + lock.wasm decrypt, golf third-party embed chain, curl relay for CDN playlists and MPEG-TS segments.",
   "type": "module",
-  "engines": {
-    "node": ">=22"
-  },
   "scripts": {
-    "start": "node src/server.js"
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && cp src/client/index.html src/client/styles.css dist/client/ && rm -rf dist/goat/vendor && cp -R src/goat/vendor dist/goat/vendor",
+    "start": "npm run build && (lsof -tiTCP:${PORT:-3000} -sTCP:LISTEN | xargs kill -9 2>/dev/null || true) && (pkill -9 -f 'node dist/server/main.js' 2>/dev/null || true) && node dist/server/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit"
   },
   "dependencies": {
     "big-integer": "^1.6.52",
-    "happy-dom": "^20.0.10"
+    "happy-dom": "^20.14.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "typescript": "^7.0.2"
   }
 }
