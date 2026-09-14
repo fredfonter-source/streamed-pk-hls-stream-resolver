@@ -1,333 +1,265 @@
 # Streamed.pk HLS Stream Resolver
 
-Local server that turns a [streamed.pk](https://streamed.pk) or [embed.st](https://embed.st) stream URL into a playable HLS playlist. It replays the embed.st client handshake in Node, decrypts the upstream M3U8 with `lock.wasm`, and relays HLS when the CDN rejects bare requests.
+Self-hosted **HLS stream resolver** for [streamed.pk](https://streamed.pk) live sports. It turns match and server selection into a playable **m3u8** playlist by replaying the [embed.st](https://embed.st) client handshake, decrypting the GOAT `/fetch` response with `lock.wasm`, and serving a local **HLS proxy** that injects the required Referer while unwrapping sleepercdn **WEBP** segments into raw **MPEG-TS**.
 
-Requires Node.js ≥ 22 and `curl` on PATH.
+The browser UI plays through [hls.js](https://github.com/video-dev/hls.js). The same resolve response exports a direct CDN playlist plus ready-made **VLC** and **mpv** commands when you want an external player instead of the built-in page.
 
-## Table of contents
+Requires **Node.js** with ESM support, **`curl` on `PATH`**, and network access to streamed.pk, embed.st, and the upstream CDN.
 
-- [Overview](#overview)
-- [Quick start](#quick-start)
-- [Accepted input URLs](#accepted-input-urls)
+## Table of Contents
+
+- [Why This Exists](#why-this-exists)
+- [Quick Start](#quick-start)
+- [Using the App](#using-the-app)
 - [Architecture](#architecture)
-- [Embed handshake and GOAT decrypt](#embed-handshake-and-goat-decrypt)
-- [HLS relay](#hls-relay)
-- [Playback](#playback)
-- [Stack](#stack)
+- [Resolve Pipeline](#resolve-pipeline)
+- [HLS Proxy and Playback](#hls-proxy-and-playback)
 - [HTTP API](#http-api)
 - [Configuration](#configuration)
-- [Project layout](#project-layout)
-- [Scope and limits](#scope-and-limits)
+- [Project Layout](#project-layout)
+- [Stack](#stack)
+- [Limits](#limits)
 - [Disclaimer](#disclaimer)
 
-## Overview
+## Why This Exists
 
-A streamed.pk watch page is not the stream. It links to an **embed.st** player. The **HLS playlist URL never appears in the HTML** — the embed sends a protobuf `POST /fetch`, decrypts the response in WASM, and only then requests the CDN `.m3u8`.
+A streamed.pk watch page is not a stream. It lists live sports matches and points each server (Admin, Alpha, Golf, and the rest) at an **embed.st** player. The real **HLS playlist URL never appears in HTML**. The official player posts a protobuf body to embed.st `/fetch`, reads a `goat` header, runs **WASM** unlock, then requests a tokenized CDN **m3u8** (typically `*.strmd.st`) with `Referer: https://embed.st/`.
 
-Three origins are involved:
+Bare Node `fetch` against that CDN often returns **403**. Segment hosts on sleepercdn wrap MPEG-TS inside a **RIFF/WEBP** container (EXIF payload), so a naive proxy that forwards bytes as `video/mp2t` will buffer forever or fail decode. This resolver copies the official path end to end: catalog → unlock → highest-bandwidth media playlist → curl-backed relay with streaming unwrap → browser or VLC/mpv.
 
-| Layer | Role |
-| --- | --- |
-| streamed.pk | Match metadata and stream link lookup (watch URLs only) |
-| embed.st | `/fetch` handshake, `goat` header, WASM decrypt |
-| CDN (`strmd.st`, tiktokcdn) | HLS playlists and MPEG-TS segments |
-
-This project reproduces that chain server-side and exposes it via `POST /api/stream`, `GET /api/hls`, and a browser UI.
-
-## Quick start
+## Quick Start
 
 ```bash
 npm install
 npm start
 ```
 
-Open `http://localhost:3000`, paste a stream URL, and click **Resolve**.
+Open [http://localhost:3000](http://localhost:3000). The start script builds TypeScript, frees the port, and runs `dist/server/main.js`.
 
-Default port is `3000`. Override with `PORT` or bind address with `HOST`.
+Useful scripts:
 
-## Accepted input URLs
-
-| Form | Example |
+| Command | What It Does |
 | --- | --- |
-| Streamed.pk watch page | `https://streamed.pk/watch/leinster-vs-bulls-2483276/admin/1` |
-| Streamed.pk stream API | `https://streamed.pk/api/stream/admin/ppv-leinster-vs-bulls?stream=1` |
-| Direct embed.st URL | `https://embed.st/embed/admin/ppv-leinster-vs-bulls/1` |
+| `npm start` | Build, restart listener, serve UI + API |
+| `npm run build` | Compile server and client into `dist/` |
+| `npm run typecheck` | Type-check without emitting |
 
-Watch URLs must include `{source}/{stream}` (e.g. `/admin/1`). Short `/watch/{matchId}` paths are rejected.
+Default listen port is `3000`. Override with `PORT`.
 
-### Building a watch URL from the API
+## Using the App
 
-| Piece | From API | Example |
-| --- | --- | --- |
-| `matchId` | `match.id` in `/api/matches/all` | `leinster-vs-bulls-2483276` |
-| `source` | `match.sources[].source` | `admin` |
-| `stream` | `streamNo` in `/api/stream/{source}/{source.id}` | `1` |
+The home page is a three-column live sports workspace:
 
-Full URL: `https://streamed.pk/watch/{matchId}/{source}/{stream}`
+1. **Matches** — live events for the selected sport (or All), filtered to feeds that still expose streams.
+2. **Player** — stage title, resolve / first-frame timing, hls.js playback, and copy fields for Direct, Proxied, VLC, and mpv.
+3. **Servers** — sources for the selected match (HD/SD, language, viewers). Click a stream to resolve and play.
 
-Parsing: `src/resolve/parse.js`. Watch URLs call `src/streamed/` to resolve the embed slot before source-specific resolve.
+Flow is always match → server → play. Resolve does not run until a server chip is chosen. After a successful unlock, the proxied URL drives the in-page player; the Direct URL is the CDN media playlist (usually `high/mono.m3u8`) intended for players that can send the embed Referer.
+
+Example external playback (values come from the export panel after resolve):
+
+```bash
+vlc --http-referrer 'https://embed.st/' 'https://lb….strmd.st/…/high/mono.m3u8'
+mpv --referrer='https://embed.st/' 'https://lb….strmd.st/…/high/mono.m3u8'
+```
+
+If the player cannot set Referer headers, use the **Proxied** `/api/hls` link instead — the local server attaches headers and rewrites nested playlist and segment URLs.
 
 ## Architecture
 
-Resolve is triggered by `POST /api/stream` from the UI. Orchestration: `src/resolve/run.js`.
+Three upstream layers sit behind one local origin:
+
+| Layer | Origin | Role |
+| --- | --- | --- |
+| Catalog | streamed.pk | Sports, live matches, per-source stream lists |
+| Unlock | embed.st | Protobuf `/fetch`, `goat` header, `lock.wasm` decrypt |
+| Media | `*.strmd.st`, sleepercdn | Master/media m3u8 and WEBP-wrapped MPEG-TS segments |
 
 ```mermaid
 sequenceDiagram
-  participant UI as player.js
-  participant Route as router.js
-  participant Run as resolve/run.js
+  participant UI as Client UI
+  participant API as Local Server
   participant SPK as streamed.pk
   participant EST as embed.st
-  participant WASM as lock.wasm
-  participant Relay as relay/m3u8.js
-  participant CDN as HLS CDN
+  participant CDN as strmd.st / sleepercdn
 
-  UI->>Route: POST /api/stream { url }
-  Route->>Run: run(input, origin)
-  alt watch URL
-    Run->>SPK: match + stream lookup
-    SPK-->>Run: embed slot
-  else embed URL
-    Run-->>Run: embed slot from URL
-  end
-  Run->>EST: POST /fetch (protobuf body)
-  EST-->>Run: goat header + encrypted body
-  Run->>WASM: decrypt in worker thread
-  WASM-->>Run: m3u8 URL
-  Run-->>UI: { m3u8, relay, … }
-  UI->>Relay: GET relay (hls.js)
-  Relay->>CDN: curl with embed Referer
-  CDN-->>Relay: playlist or segment
-  Relay-->>UI: rewritten m3u8 or stripped TS
+  UI->>API: GET /api/matches?sport=&scope=live
+  API->>SPK: /api/matches/live (+ stream probe)
+  SPK-->>API: live matches
+  API-->>UI: match list
+
+  UI->>API: GET /api/streams?matchId=
+  API->>SPK: /api/stream/{source}/{id}
+  SPK-->>API: stream rows
+  API-->>UI: servers (HD/SD)
+
+  UI->>API: POST /api/resolve
+  API->>EST: POST /fetch (protobuf)
+  EST-->>API: goat + ciphertext
+  API->>API: lock.wasm unlock (worker)
+  API->>CDN: curl master m3u8 (Referer)
+  API->>API: select highest BANDWIDTH media
+  API-->>UI: m3u8, referer, relay
+
+  UI->>API: GET /api/hls (playlist + segments)
+  API->>CDN: curl with Referer / Origin
+  API-->>UI: rewritten m3u8 / unwrapped TS
 ```
 
-| Layer | Module | Responsibility |
-| --- | --- | --- |
-| HTTP | `src/http/router.js` | `/api/stream`, `/api/hls`, static assets |
-| Resolve | `src/resolve/run.js` | Parse → source resolve → relay link |
-| Parse | `src/resolve/parse.js`, `src/resolve/slot.js` | Watch, embed, and API URLs → embed slot |
-| Match lookup | `src/streamed/` | streamed.pk API for watch URLs |
-| GOAT source | `src/sources/goat/` | `/fetch`, protobuf, WASM decrypt |
-| Golf source | `src/sources/golf/` | Third-party embed chain → m3u8 |
-| Wire | `src/wire/headers.js`, `src/wire/curl.js` | Shared fetch headers; CDN pull (curl) |
-| Relay | `src/relay/link.js`, `src/relay/m3u8.js`, `src/relay/segment.js` | Relay URLs; M3U8 rewrite; PNG-wrapped TS strip |
-| UI | `public/player.js` | Resolve form, hls.js, VLC/MPV export |
+Golf servers take a different embed hop (third-party iframe → ingest slot) before the same GOAT unlock. Everything else shares the HLS proxy path.
 
-Handshake and WASM details: [Embed handshake and GOAT decrypt](#embed-handshake-and-goat-decrypt). Relay and playback: [HLS relay](#hls-relay), [Playback](#playback).
+## Resolve Pipeline
 
-## Embed handshake and GOAT decrypt
+`POST /api/resolve` accepts either a match-bound selection or a direct source slot:
 
-### Embed slot
-
-Every resolve path ends with an embed slot used for `/fetch`, WASM, and relay referer headers:
-
-```
-{ origin: "https://embed.st", path: "admin/ppv-leinster-vs-bulls/1", source, id, stream, slug }
-```
-
-Built by `src/resolve/slot.js` via `src/resolve/parse.js` (direct embed URLs) or `src/streamed/watch.js` (watch URLs).
-
-### `/fetch` request
-
-`src/sources/goat/proto.js` encodes three protobuf string fields — `source`, `id`, `stream` — into the POST body.
-
-`src/sources/goat/fetch.js` sends:
-
-```
-POST {origin}/fetch
-Content-Type: application/octet-stream
-Origin: {origin}
-Referer: {origin}/embed/{path}
-```
-
-### `/fetch` response
-
-| Part | Use |
+| Body | Meaning |
 | --- | --- |
-| Body | Encrypted blob; WASM decrypts it to recover the playlist URL |
-| `goat` header | 32-char key material (e.g. `NOSCRPS…`) passed into WASM |
+| `matchId` + `source` + `stream` | Look up the match, pick that source’s `streamNo` |
+| `source` + `id` + `stream` | Resolve without browsing the live list |
 
-### WASM decrypt
+Steps after input validation (`src/handlers/resolve.ts`):
 
-`src/sources/goat/lock.js` spawns `src/sources/goat/lock-worker.js` in a **worker thread**. The worker:
+1. Build an embed **slot** (`source` / `id` / `stream` → `embed.st/embed/...`).
+2. **Golf** → `unlockGolf` maps to an ingest slot; other sources → `resolveGoat`.
+3. GOAT path encodes a protobuf body (`src/goat/proto.ts`), `POST`s embed.st `/fetch` (`src/goat/fetch.ts`), and decrypts in a worker thread with happy-dom + vendored `lock.wasm` (`src/goat/lock.ts`, `src/goat/lock-worker.ts`).
+4. Pull the unlocked playlist with curl; if it is a master, **select the highest `BANDWIDTH` media URI** (official JW player starts on `high/mono.m3u8`).
+5. Return `m3u8`, `referer` (`https://embed.st/`), and `relay` (`/api/hls?url=&referer=`).
 
-- Mounts a **happy-dom** window with stubbed `jwplayer` and mock `fetch`
-- Loads `src/sources/goat/vendor/lock.wasm` via `lock-esm.mjs`
-- Calls `set_stream_jw(source, id, stream)`; WASM decrypts the body and requests the `.m3u8` internally
-- Returns the captured CDN URL, e.g. `https://lb10.strmd.st/secure/…/high/mono.m3u8`
+Tokens are live and short-lived. Nothing is cached on disk.
 
-WASM runs in a worker because it patches global `fetch` — running it on the main thread breaks later API calls.
+## HLS Proxy and Playback
 
-Output from resolve: raw **`m3u8`** plus a **`relay`** URL pointing at this server's `/api/hls`.
+`GET /api/hls` (`src/proxy/hls.ts`) is the referer-aware **HLS proxy**:
 
-## HLS relay
+- Upstream pulls go through **curl** (`src/proxy/pull.ts`) with browser User-Agent, `Referer`, and `Origin` — required because Node TLS fingerprints are blocked on the CDN.
+- Playlists are rewritten so every media URI and `URI="…"` attribute loops back through `/api/hls`.
+- sleepercdn segment URLs stream with `curl -N`: parse the WEBP header early, emit EXIF MPEG-TS as soon as length is known, and kill the curl child when the TS body is complete (`pullGoatSegmentStream`).
+- Non-streaming fallbacks still unwrap full buffers via `unwrapGoatSegment` (RIFF/WEBP → EXIF → 188-byte TS packets).
 
-The browser and most players cannot fetch `strmd.st` directly — the CDN checks embed `Referer` and blocks bare requests. Two URLs are returned after resolve:
+The HTTP server pipes response bodies (`src/server/main.ts`) instead of buffering `arrayBuffer()`, so first-byte latency tracks upstream TTFB rather than full segment download time.
 
-| URL | Meaning |
-| --- | --- |
-| `m3u8` | Direct upstream playlist |
-| `relay` | Same content through `GET /api/hls` on this server |
-
-`src/relay/m3u8.js` serves `GET /api/hls`:
-
-1. **Pull upstream** via `src/wire/curl.js` with `Referer: {embedOrigin}/` and `Origin: {embedOrigin}`.
-2. **Playlists** — detect `#EXTM3U`, rewrite every media line and `URI="…"` tag back through `/api/hls`.
-3. **Segments** — tiktokcdn returns PNG-wrapped MPEG-TS; `src/relay/segment.js` strips the wrapper and returns `video/mp2t`.
-
-Query parameters:
-
-| Param | Required | Description |
-| --- | --- | --- |
-| `url` | yes | Upstream playlist or segment URL |
-| `embed` | yes | Embed path, e.g. `admin/ppv-leinster-vs-bulls/1` |
-| `embedOrigin` | yes | Embed host, e.g. `https://embed.st` |
-| `referer` | no | Upstream referer override (golf CDN uses `https://exposestrat.com/`) |
-
-Use **`relay`** for in-browser playback. **`m3u8`** plus **`referer`** is what VLC/MPV export uses; bare **`m3u8`** is often blocked without that referer.
-
-## Playback
-
-### In-browser
-
-The UI loads **hls.js** 1.5.20 from jsDelivr and plays **`relay`** so referer handling stays on the server.
-
-### VLC / MPV
-
-The UI copies commands using the direct **`m3u8`** URL and the upstream referer:
-
-```bash
-vlc --http-referrer="https://embed.st/" "https://…/playlist.m3u8"
-mpv --referrer="https://embed.st/" --force-media-title="Leinster vs Bulls" "https://…/playlist.m3u8"
-```
-
-Golf streams use referer `https://exposestrat.com/`. If segments are PNG-wrapped or the CDN still blocks, use **`relay`** instead.
-
-## Stack
-
-| Role | Technology |
-| --- | --- |
-| Runtime | Node.js ≥ 22, ES modules, native `fetch` |
-| HTTP | `node:http` |
-| Embed WASM sandbox | `happy-dom` + `worker_threads` |
-| WASM bundle | `lock.wasm`, `lock-esm.mjs` (`big-integer` for vendor bundle) |
-| Upstream CDN pull | `curl` (referer headers; Node fetch blocked on strmd.st) |
-| Segment unwrap | `relay/segment.js` — PNG-wrapped MPEG-TS from tiktokcdn |
-| Browser HLS (UI) | hls.js 1.5.20 from jsDelivr |
-
-No browser, Playwright, or headless Chrome required.
+The client HLS config mirrors the official embed numbers: `maxBufferSize: 0`, `maxBufferLength: 10`, `liveSyncDurationCount: 7`.
 
 ## HTTP API
 
-### `POST /api/stream`
+All JSON and HLS routes share the same process as the static UI.
 
-By watch or embed URL:
+### `GET /api/sports`
 
-```json
-{ "url": "https://streamed.pk/watch/leinster-vs-bulls-2483276/admin/1" }
-```
+Proxies streamed.pk `/api/sports`. Returns `[{ id, name }, …]`.
 
-Programmatic (validated against the [streamed.pk API](https://streamed.pk/docs)) — `source` and `stream` are required:
+### `GET /api/matches`
+
+| Query | Behavior |
+| --- | --- |
+| `sport=all` (or a category) + `scope=live` | Live list from `/api/matches/live`, optionally filtered by category, dropping matches with empty stream probes |
+| `scope=popular` / `scope=all` | streamed.pk popular or full sport lists |
+| missing `sport` or `sport=live-popular` | `/api/matches/live/popular` |
+
+### `GET /api/streams`
+
+| Query | Behavior |
+| --- | --- |
+| `matchId=` | All sources for that match, ranked, with `sourceName` / `sourceDescription` |
+| `source=` + `id=` | Single-source stream list |
+
+### `POST /api/resolve`
+
+Request body (JSON):
 
 ```json
 {
-  "matchId": "leinster-vs-bulls-2483276",
+  "matchId": "leeds-united-vs-newcastle-united-2494036",
   "source": "admin",
   "stream": 1
 }
 ```
 
-Success:
+or:
+
+```json
+{
+  "source": "admin",
+  "id": "ppv-leeds-united-vs-newcastle-united",
+  "stream": 1
+}
+```
+
+Success shape:
 
 ```json
 {
   "ok": true,
-  "matchId": "leinster-vs-bulls-2483276",
-  "title": "Leinster vs Bulls",
-  "slug": "ppv-leinster-vs-bulls",
+  "matchId": "…",
+  "title": "…",
   "source": "admin",
   "stream": "1",
-  "watchUrl": "https://streamed.pk/watch/leinster-vs-bulls-2483276/admin/1",
-  "embedUrl": "https://embed.st/embed/admin/ppv-leinster-vs-bulls/1",
-  "m3u8": "https://lb….strmd.st/secure/…/high/mono.m3u8",
+  "embedUrl": "https://embed.st/embed/…",
+  "m3u8": "https://lb….strmd.st/…/high/mono.m3u8",
   "referer": "https://embed.st/",
-  "relay": "http://localhost:3000/api/hls?url=…&embed=…&embedOrigin=…"
+  "relay": "http://localhost:3000/api/hls?url=…&referer=…"
 }
 ```
 
-Failure:
-
-```json
-{ "ok": false, "stage": "input", "error": "match not found: …" }
-```
-
-Stages: `input` (bad URL / missing match) or `resolve` (fetch / decrypt / upstream failure).
+Failures return `{ "ok": false, "stage": "input"|"resolve", "error": "…" }`.
 
 ### `GET /api/hls`
 
-HLS relay. See [HLS relay](#hls-relay) for query parameters.
+| Query | Required | Role |
+| --- | --- | --- |
+| `url` | yes | Upstream playlist or segment URL |
+| `referer` | yes | Usually `https://embed.st/` |
 
-### Static UI
-
-`/` serves `public/index.html`, `player.js`, and `style.css`.
+Returns rewritten `application/vnd.apple.mpegurl` or `video/mp2t`.
 
 ## Configuration
 
-Environment variables (`src/env.js`):
+Environment variables (`src/config/site.ts`):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `3000` | Listen port |
-| `HOST` | all interfaces | Bind address when set |
-| `STREAMED_ORIGIN` | `https://streamed.pk` | Match API host |
-| `EMBED_ORIGIN` | `https://embed.st` | Embed host |
-| `USER_AGENT` | Chrome 149 macOS string | Outbound fetch User-Agent |
+| `PORT` | `3000` | HTTP listen port |
+| `STREAMED_ORIGIN` | `https://streamed.pk` | Catalog API origin |
+| `EMBED_ORIGIN` | `https://embed.st` | Unlock / Referer origin |
+| `USER_AGENT` | Chrome-like desktop UA | Shared on streamed.pk fetch and curl CDN pulls |
 
-## Project layout
+Source display names, descriptions, and sort tiers live in `src/config/sources.ts` (Admin through Intel).
+
+## Project Layout
 
 ```
 src/
-  server.js                 HTTP entry
-  env.js                    PORT, origins, USER_AGENT
-  http/
-    router.js               /api/stream, /api/hls, static
-    static.js               public file serving
-  resolve/
-    run.js                  resolve orchestrator
-    parse.js                URL → embed slot
-    slot.js                 embed slot builder
-  sources/
-    goat/
-      fetch.js              POST embed.st/fetch
-      proto.js              protobuf body
-      lock.js               spawn WASM worker
-      lock-worker.js        GOAT decrypt
-      vendor/               lock.wasm, lock-esm.mjs
-    golf/
-      resolve.js            embedhd → exposestrat → m3u8
-  streamed/                 streamed.pk match lookup (watch URLs)
-  wire/
-    headers.js              shared fetch User-Agent / Referer
-    curl.js                 CDN pull (curl)
-  relay/
-    link.js                 relay URL builder + slot parse
-    m3u8.js                 HLS relay + URL rewrite
-    segment.js              PNG-wrapped TS strip
-public/
-  index.html                resolver UI
-  player.js                 hls.js player, timers, VLC/MPV export
-  style.css
+  api/           streamed.pk HTTP client (sports, live, streams, match lookup)
+  client/        Poppins UI (HTML/CSS) + TypeScript app (hls.js player)
+  config/        site origins and source catalog
+  goat/          protobuf fetch, lock.wasm worker, golf → ingest, vendor WASM
+  handlers/      catalog + resolve HTTP handlers
+  proxy/         curl pull, media playlist select, HLS rewrite, WEBP unwrap
+  server/        Node HTTP entry, router, static client files
+  types/         shared models (Match, StreamLink, ResolveResult, Slot)
 ```
 
-## Scope and limits
+Build output lands in `dist/` (gitignored). Scratch RE artifacts stay in local `tmp/` (excluded via `.git/info/exclude`, not committed).
 
-- **GOAT sources** (admin, echo, …) use embed.st `/fetch` + WASM. **Golf** uses a separate third-party embed chain.
-- **streamed.pk / embed.st** watch and embed URLs; golf pulls from exposestrat / zohanayaan CDN.
-- **Direct `m3u8`** plays in VLC/MPV with the returned `referer`; some CDNs still need **`relay`** (PNG-wrapped segments).
-- **Upstream tokens expire** — nothing is persisted or cached.
-- **Match must exist** in `/api/matches/all` for watch URLs; use a direct embed URL if the match has ended.
-- **`curl` required** for CDN and strmd.st fetches.
+## Stack
+
+| Piece | Choice |
+| --- | --- |
+| Language | TypeScript (ESM, NodeNext server + bundler client) |
+| Runtime | Node.js `http` + Web `Request`/`Response` |
+| Unlock | happy-dom + worker_threads + vendored `lock.wasm` / `lock-esm.mjs` |
+| Math helper | `big-integer` (WASM glue) |
+| CDN transport | `curl` (keep-alive-friendly streaming for segments) |
+| Player | hls.js from jsDelivr |
+
+## Limits
+
+- Scope is **streamed.pk / embed.st** (including Golf’s third-party hop). Other aggregators use different unlock chains.
+- Live stream tokens expire; resolve again when playback dies.
+- Matches must still exist on streamed.pk live/all endpoints for `matchId` resolve.
+- **curl** is mandatory for CDN and playlist pulls; do not expect plain `fetch` to replace it without a fingerprint strategy.
+- The local relay is for localhost / trusted networks — it does not add auth.
 
 ## Disclaimer
 
-For **study and research** only — to learn how the embed.st client handshake produces an HLS playlist URL. This repo does not own, host, or grant rights to any video content. Provided as is, without warranty.
+This project is for research, interoperability, and personal playback against publicly reachable streamed.pk / embed.st endpoints. Respect upstream terms of service, copyright, and local law. Do not use it to redistribute or monetize streams you are not authorized to carry.
