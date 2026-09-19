@@ -1,25 +1,20 @@
 # ---------- build stage ----------
 FROM node:20-slim AS build
-
 WORKDIR /app
-
 # install build deps
 COPY package.json package-lock.json ./
 RUN npm ci
-
 # copy source & compile
 COPY tsconfig.json tsconfig.client.json ./
 COPY src ./src
 RUN npm run build
-
 # ---------- runtime stage ----------
 FROM node:20-slim
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Install curl-impersonate (spoofs Chrome TLS JA3/JA4 fingerprint).
+    # Install curl-impersonate (spoofs Chrome TLS JA3/JA4 fingerprint).
 # The CDN (*.strmd.st) fingerprints Client Hello; plain curl is rejected with 403.
 # Detect architecture at build time and download the correct binary.
 RUN ARCH="$(dpkg --print-architecture)" && \
@@ -36,15 +31,10 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     cp /tmp/curl-impersonate-chrome /usr/local/bin/curl-impersonate && \
     chmod +x /usr/local/bin/curl-impersonate && \
     rm -rf /tmp/ci.tar.gz /tmp/curl-impersonate*
-
 WORKDIR /app
-
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-
 COPY --from=build /app/dist ./dist
-
 ENV PORT=3000
 EXPOSE 3000
-
 CMD ["node", "dist/server/main.js"]
