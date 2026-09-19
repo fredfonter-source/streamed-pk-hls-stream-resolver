@@ -11,6 +11,8 @@ function curlArgs(url: string, referer: string): string[] {
     "-f",
     "-N",
     "--compressed",
+    "--tlsv1.2",
+    "--ciphers", "DEFAULT",
     "-A",
     userAgent,
     "-H",
@@ -22,11 +24,7 @@ function curlArgs(url: string, referer: string): string[] {
     "-H",
     "Accept-Language: en-US,en;q=0.9",
     "-H",
-    "Sec-Fetch-Dest: empty",
-    "-H",
-    "Sec-Fetch-Mode: cors",
-    "-H",
-    "Sec-Fetch-Site: cross-site",
+    "Accept-Encoding: gzip, deflate, br",
     url,
   ];
 }
@@ -105,7 +103,7 @@ export function pullGoatSegmentStream(
         },
       });
 
-      const available = pending.subarray(meta.offset);
+            const available = pending.subarray(meta.offset);
       const first = available.subarray(0, Math.min(available.length, meta.length));
       let left = meta.length - first.length;
       out.push(first);
