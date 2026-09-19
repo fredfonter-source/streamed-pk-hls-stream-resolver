@@ -19,6 +19,14 @@ function curlArgs(url: string, referer: string): string[] {
     `Origin: ${origin}`,
     "-H",
     "Accept: */*",
+    "-H",
+    "Accept-Language: en-US,en;q=0.9",
+    "-H",
+    "Sec-Fetch-Dest: empty",
+    "-H",
+    "Sec-Fetch-Mode: cors",
+    "-H",
+    "Sec-Fetch-Site: cross-site",
     url,
   ];
 }
