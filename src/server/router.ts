@@ -6,6 +6,11 @@ import { serveClient } from "./static.js";
 export async function handleRequest(request: Request): Promise<Response> {
   const url = new URL(request.url);
 
+  // Render (and most reverse proxies) terminate TLS at the edge and forward
+  // requests as HTTP.  The X-Forwarded-Proto header carries the real protocol.
+  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(":", "");
+  const origin = `${proto}://${url.host}`;
+
   try {
     if (url.pathname === "/api/hls") return proxyHls(request);
     if (url.pathname === "/api/sports") return handleSports();
@@ -27,7 +32,7 @@ export async function handleRequest(request: Request): Promise<Response> {
       } catch {
         return Response.json({ ok: false, error: "invalid json" }, { status: 400 });
       }
-      return Response.json(await resolveStream(input, url.origin));
+      return Response.json(await resolveStream(input, origin));
     }
     if (url.pathname.startsWith("/api/")) {
       return Response.json({ error: "not found" }, { status: 404 });
