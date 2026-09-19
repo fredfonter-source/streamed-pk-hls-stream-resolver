@@ -16,17 +16,26 @@ RUN npm run build
 FROM node:20-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates wget xz-utils && \
+      ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Install static curl-impersonate binary (spoofs Chrome TLS JA3 fingerprint).
+# Install curl-impersonate (spoofs Chrome TLS JA3/JA4 fingerprint).
 # The CDN (*.strmd.st) fingerprints Client Hello; plain curl is rejected with 403.
-RUN wget -qO /tmp/curl-impersonate.tar.xz \
-      "https://github.com/lexiforest/curl-impersonate/releases/download/v2.2.2/curl-impersonate-v2.2.2.x86_64-linux-gnu.tar.xz" && \
-    tar xJf /tmp/curl-impersonate.tar.xz -C /tmp && \
-    cp /tmp/curl-impersonate /usr/local/bin/curl-impersonate && \
+# Detect architecture at build time and download the correct binary.
+RUN ARCH="$(dpkg --print-architecture)" && \
+    case "$ARCH" in \
+      amd64)  CI_ARCH="x86_64-linux-gnu" ;; \
+      arm64)  CI_ARCH="aarch64-linux-gnu" ;; \
+      *)      echo "Unsupported arch: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -sSL -o /tmp/ci.tar.gz \
+      "https://github.com/lexiforest/curl-impersonate/releases/download/v2.2.2/curl-impersonate-v2.2.2.${CI_ARCH}.tar.gz" && \
+    tar xzf /tmp/ci.tar.gz -C /tmp && \
+    # The tarball contains curl-impersonate-chrome and wrapper scripts.
+    # Copy the main binary as curl-impersonate.
+    cp /tmp/curl-impersonate-chrome /usr/local/bin/curl-impersonate && \
     chmod +x /usr/local/bin/curl-impersonate && \
-    rm -rf /tmp/curl-impersonate*
+    rm -rf /tmp/ci.tar.gz /tmp/curl-impersonate*
 
 WORKDIR /app
 
