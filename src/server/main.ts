@@ -32,7 +32,10 @@ createServer((incoming, outgoing) => {
       signal: abort.signal,
     };
     if (body && body.length) init.body = new Uint8Array(body);
-    const request = new Request(`http://${host}${incoming.url ?? "/"}`, init);
+    // Use X-Forwarded-Proto from the reverse proxy (Render) to construct the
+    // correct public URL so that relay/proxy links use https:// in production.
+    const proto = (incoming.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
+    const request = new Request(`${proto}://${host}${incoming.url ?? "/"}`, init);
     const response = await handleRequest(request);
     if (outgoing.writableEnded || abort.signal.aborted) return;
     outgoing.statusCode = response.status;
