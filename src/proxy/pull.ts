@@ -1,7 +1,16 @@
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
+import { existsSync } from "node:fs";
 
 import { userAgent } from "../config/site.js";
+
+/**
+ * CDN pulls require a TLS fingerprint that matches Chrome.
+ * Plain curl is rejected by *.strmd.st (JA3/JA4 fingerprinting → 403).
+ * curl-impersonate spoofs Chrome's Client Hello; fall back to plain curl
+ * when the impersonate binary is not installed (local dev).
+ */
+const curlBin = existsSync("/usr/local/bin/curl-impersonate") ? "curl-impersonate" : "curl";
 
 function curlArgs(url: string, referer: string): string[] {
   const origin = new URL(referer).origin;
@@ -11,8 +20,6 @@ function curlArgs(url: string, referer: string): string[] {
     "-f",
     "-N",
     "--compressed",
-    "--tlsv1.2",
-    "--ciphers", "DEFAULT",
     "-A",
     userAgent,
     "-H",
@@ -21,16 +28,12 @@ function curlArgs(url: string, referer: string): string[] {
     `Origin: ${origin}`,
     "-H",
     "Accept: */*",
-    "-H",
-    "Accept-Language: en-US,en;q=0.9",
-    "-H",
-    "Accept-Encoding: gzip, deflate, br",
     url,
   ];
 }
 
 export async function pull(url: string, referer: string): Promise<Buffer> {
-  const child = spawn("curl", curlArgs(url, referer), { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(curlBin, curlArgs(url, referer), { stdio: ["ignore", "pipe", "pipe"] });
   const chunks: Buffer[] = [];
   const errChunks: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -51,7 +54,7 @@ export function pullGoatSegmentStream(
   signal?: AbortSignal,
 ): Promise<{ stream: Readable; contentLength: number }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("curl", curlArgs(url, referer), { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(curlBin, curlArgs(url, referer), { stdio: ["ignore", "pipe", "pipe"] });
     const errChunks: Buffer[] = [];
     child.stderr.on("data", (chunk: Buffer) => errChunks.push(chunk));
     child.on("error", reject);
@@ -103,7 +106,7 @@ export function pullGoatSegmentStream(
         },
       });
 
-            const available = pending.subarray(meta.offset);
+      const available = pending.subarray(meta.offset);
       const first = available.subarray(0, Math.min(available.length, meta.length));
       let left = meta.length - first.length;
       out.push(first);
@@ -159,3 +162,4 @@ function readExifTsMeta(buf: Buffer): { offset: number; length: number } | null 
   }
   return null;
 }
+
