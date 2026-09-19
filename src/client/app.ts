@@ -4,6 +4,7 @@ type Match = {
   id: string;
   title: string;
   category: string;
+  date: number;
   sources: { source: string; id: string }[];
 };
 
@@ -258,10 +259,48 @@ const renderSports = () => {
   );
 };
 
+const matchIsLive = (match: Match): boolean => {
+  if (!match.date) return true;
+  const now = Date.now();
+  const diff = now - match.date;
+  return diff > -2 * 60 * 60 * 1000 && diff < 4 * 60 * 60 * 1000;
+};
+
+const formatMatchDate = (ms: number): string => {
+  const d = new Date(ms);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (isToday) return `Today ${time}`;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow ${time}`;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" }) + ` ${time}`;
+};
+
+const sortedMatches = (matches: Match[]): Match[] => {
+  const live: Match[] = [];
+  const upcoming: Match[] = [];
+  const other: Match[] = [];
+  for (const m of matches) {
+    if (!m.date) { live.push(m); continue; }
+    if (m.date > Date.now()) upcoming.push(m);
+    else if (matchIsLive(m)) live.push(m);
+    else other.push(m);
+  }
+  live.sort((a, b) => (b.date || 0) - (a.date || 0));
+  upcoming.sort((a, b) => (a.date || 0) - (b.date || 0));
+  other.sort((a, b) => (b.date || 0) - (a.date || 0));
+  return [...live, ...upcoming, ...other];
+};
+
 const renderMatches = () => {
-  ui.matchCount.textContent = String(state.matches.length);
+  const sorted = sortedMatches(state.matches);
+  ui.matchCount.textContent = String(sorted.length);
   ui.matches.replaceChildren(
-    ...state.matches.map((match) => {
+    ...sorted.map((match) => {
+      const isLive = matchIsLive(match);
+      const isFuture = match.date > Date.now();
       const item = document.createElement("li");
       const button = document.createElement("button");
       button.type = "button";
@@ -272,21 +311,29 @@ const renderMatches = () => {
       title.textContent = match.title;
       const meta = document.createElement("span");
       meta.className = "match__meta";
+      const parts: string[] = [];
+      if (isLive) {
+        parts.push("● LIVE");
+      } else if (isFuture && match.date) {
+        parts.push(`Upcoming · ${formatMatchDate(match.date)}`);
+      }
+      if (state.sportId === "all") parts.push(match.category);
       const sources = [...new Set(match.sources.map((entry) => entry.source))]
         .map(titleCase)
         .join(" · ");
-      meta.textContent =
-        state.sportId === "all" ? `${match.category} · ${sources || "No sources"}` : sources || "No sources";
+      parts.push(sources || "No sources");
+      meta.textContent = parts.join(" · ");
+      if (isLive) meta.classList.add("is-live");
       button.append(title, meta);
       button.onclick = () => void selectMatch(match);
       item.append(button);
       return item;
     }),
   );
-  if (!state.matches.length && !state.loading) {
+  if (!sorted.length && !state.loading) {
     const empty = document.createElement("li");
     empty.className = "matches__empty";
-    empty.textContent = "No live matches for this sport right now.";
+    empty.textContent = "No matches for this sport right now.";
     ui.matches.append(empty);
   }
 };
@@ -410,17 +457,17 @@ const loadMatches = async () => {
   clearError();
   renderMatches();
   try {
-    const response = await fetch(`/api/matches?sport=${encodeURIComponent(state.sportId)}&scope=live`);
+    const response = await fetch(`/api/matches?sport=${encodeURIComponent(state.sportId)}&scope=all`);
     const matches = (await response.json()) as Match[];
     if (!response.ok) throw new Error("matches failed");
     state.matches = Array.isArray(matches) ? matches : [];
     ui.status.className = "status";
-    ui.liveMeta.textContent = `${state.matches.length} live`;
+    ui.liveMeta.textContent = `${state.matches.length} total`;
   } catch (error) {
     state.matches = [];
     ui.status.className = "status is-error";
     ui.liveMeta.textContent = "Failed";
-    showError(error instanceof Error ? error.message : "Live list failed");
+    showError(error instanceof Error ? error.message : "Match list failed");
   } finally {
     state.loading = false;
     ui.refresh.disabled = false;
