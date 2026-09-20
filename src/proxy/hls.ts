@@ -6,6 +6,9 @@ import { unwrapGoatSegment } from "./unwrap.js";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Range, Referer",
+  "Access-Control-Expose-Headers": "Content-Length, Content-Type, Content-Range",
   "Cache-Control": "no-store",
 } as const;
 
@@ -18,7 +21,7 @@ function isPlaylist(body: Buffer): boolean {
 }
 
 function rewrite(text: string, base: string, referer: string, origin: string): string {
-  return text
+  let out = text
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
@@ -30,6 +33,15 @@ function rewrite(text: string, base: string, referer: string, origin: string): s
       return relayLink(origin, absUri(trimmed, base), referer);
     })
     .join("\n");
+
+  // ExoPlayer/BetterPlayer: add #EXT-X-PLAYLIST-TYPE for live streams
+  if (!out.includes("#EXT-X-PLAYLIST-TYPE") && !out.includes("#EXT-X-ENDLIST")) {
+    out = out.replace(
+      /#EXT-X-VERSION:\d+/,
+      "$&\n#EXT-X-PLAYLIST-TYPE:EVENT",
+    );
+  }
+  return out;
 }
 
 function isGoatWebpUrl(target: string): boolean {
@@ -40,23 +52,51 @@ function isGoatWebpUrl(target: string): boolean {
   }
 }
 
+function detectSegmentContentType(target: string, body?: Buffer): string {
+  if (target.includes(".ts")) return "video/mp2t";
+  if (target.includes(".mp4") || target.includes(".m4s")) return "video/mp4";
+  if (target.includes(".aac")) return "audio/aac";
+  if (target.includes(".vtt")) return "text/vtt";
+  // Check magic bytes if body available
+  if (body && body.length >= 4) {
+    if (body[0] === 0x47) return "video/mp2t"; // TS sync byte
+    if (body.toString("ascii", 0, 4) === "RIFF") return "video/mp2t"; // WEBP wrapped TS
+    if (body.toString("ascii", 0, 4) === "ftyp") return "video/mp4"; // MP4 ftyp box
+  }
+  return "video/mp2t";
+}
+
 export async function proxyHls(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const target = url.searchParams.get("url");
   const referer = url.searchParams.get("referer");
   if (!target || !referer) return new Response("url and referer required", { status: 400, headers: cors });
 
+  const isHead = request.method === "HEAD";
+
   try {
     if (target.includes(".m3u8")) {
+      if (isHead) {
+        return new Response(null, {
+          status: 200,
+          headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl" },
+        });
+      }
       const raw = await pull(target, referer);
       if (!raw.length) throw new Error("empty upstream body");
       return new Response(rewrite(raw.toString("utf8"), target, referer, url.origin), {
         status: 200,
-        headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl" },
+        headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-cache, no-store, must-revalidate" },
       });
     }
 
     if (isGoatWebpUrl(target)) {
+      if (isHead) {
+        return new Response(null, {
+          status: 200,
+          headers: { ...cors, "Content-Type": "video/mp2t" },
+        });
+      }
       const { stream, contentLength } = await pullGoatSegmentStream(target, referer, request.signal);
       return new Response(Readable.toWeb(stream) as import("node:stream/web").ReadableStream, {
         status: 200,
@@ -68,20 +108,28 @@ export async function proxyHls(request: Request): Promise<Response> {
       });
     }
 
+      if (isHead) {
+      return new Response(null, {
+        status: 200,
+        headers: { ...cors, "Content-Type": detectSegmentContentType(target) },
+      });
+    }
+
     const raw = await pull(target, referer);
     if (!raw.length) throw new Error("empty upstream body");
     if (isPlaylist(raw)) {
       return new Response(rewrite(raw.toString("utf8"), target, referer, url.origin), {
         status: 200,
-        headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl" },
+        headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-cache, no-store, must-revalidate" },
       });
     }
     const segment = unwrapGoatSegment(raw);
+    const ct = detectSegmentContentType(target, segment);
     return new Response(new Uint8Array(segment), {
       status: 200,
       headers: {
         ...cors,
-        "Content-Type": "video/mp2t",
+        "Content-Type": ct,
         "Content-Length": String(segment.length),
       },
     });
