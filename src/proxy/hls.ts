@@ -117,7 +117,7 @@ export async function proxyHls(request: Request): Promise<Response> {
         headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-cache, no-store, must-revalidate" },
       });
     }
-        const segment = unwrapGoatSegment(raw);
+    const segment = unwrapGoatSegment(raw);
     const ct = detectSegmentContentType(target, segment);
     return new Response(new Uint8Array(segment), {
       status: 200,
