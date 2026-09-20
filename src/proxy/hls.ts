@@ -21,27 +21,21 @@ function isPlaylist(body: Buffer): boolean {
 }
 
 function rewrite(text: string, base: string, referer: string, origin: string): string {
-  let out = text
+  return text
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
       if (!trimmed) return line;
+      // Strip upstream GOAT comments — some strict HLS parsers choke on them
+      if (trimmed.startsWith("##")) return null;
       if (trimmed.startsWith("#")) {
         if (!trimmed.includes('URI="')) return line;
         return trimmed.replace(/URI="([^"]+)"/g, (_, uri: string) => `URI="${relayLink(origin, absUri(uri, base), referer)}"`);
       }
       return relayLink(origin, absUri(trimmed, base), referer);
     })
+    .filter((line): line is string => line !== null)
     .join("\n");
-
-  // ExoPlayer/BetterPlayer: add #EXT-X-PLAYLIST-TYPE for live streams
-  if (!out.includes("#EXT-X-PLAYLIST-TYPE") && !out.includes("#EXT-X-ENDLIST")) {
-    out = out.replace(
-      /#EXT-X-VERSION:\d+/,
-      "$&\n#EXT-X-PLAYLIST-TYPE:EVENT",
-    );
-  }
-  return out;
 }
 
 function isGoatWebpUrl(target: string): boolean {
@@ -79,7 +73,7 @@ export async function proxyHls(request: Request): Promise<Response> {
       if (isHead) {
         return new Response(null, {
           status: 200,
-          headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl" },
+          headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-cache, no-store, must-revalidate" },
         });
       }
       const raw = await pull(target, referer);
@@ -108,7 +102,7 @@ export async function proxyHls(request: Request): Promise<Response> {
       });
     }
 
-      if (isHead) {
+    if (isHead) {
       return new Response(null, {
         status: 200,
         headers: { ...cors, "Content-Type": detectSegmentContentType(target) },
@@ -123,7 +117,7 @@ export async function proxyHls(request: Request): Promise<Response> {
         headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-cache, no-store, must-revalidate" },
       });
     }
-    const segment = unwrapGoatSegment(raw);
+        const segment = unwrapGoatSegment(raw);
     const ct = detectSegmentContentType(target, segment);
     return new Response(new Uint8Array(segment), {
       status: 200,
