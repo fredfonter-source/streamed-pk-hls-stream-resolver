@@ -6,6 +6,19 @@ import { serveClient } from "./static.js";
 export async function handleRequest(request: Request): Promise<Response> {
   const url = new URL(request.url);
 
+  // CORS preflight
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Range, Referer",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
+
   // Render (and most reverse proxies) terminate TLS at the edge and forward
   // requests as HTTP.  The X-Forwarded-Proto header carries the real protocol.
   const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(":", "");
